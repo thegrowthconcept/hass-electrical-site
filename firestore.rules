@@ -7,13 +7,10 @@ rules_version = '2';
 // Collection: leads
 // Document ID: auto-generated
 // Purpose: Public, unauthenticated quote-request submissions from the
-//          Contact form. This is a write-only inbox — nobody can read,
-//          update, delete, or list leads from the client. Reads happen
-//          later from a separate authenticated admin context (e.g. the
-//          Admin SDK on a server, or a signed-in admin app not covered
-//          by these rules yet).
+//          Contact form, triaged by a signed-in admin (business owner)
+//          via a dashboard built separately.
 //
-// Fields:
+// Public fields (settable only on create, immutable afterward):
 //   - name:      string, required, 1-200 chars
 //   - phone:     string, required, 1-30 chars
 //   - email:     string, required, 1-200 chars, valid email format
@@ -21,12 +18,21 @@ rules_version = '2';
 //   - message:   string, required, 1-5000 chars
 //   - createdAt: timestamp, required, must equal request.time
 //                (client must write this via serverTimestamp())
-//   - status:    string, required, must be "new" on create
-//                (server-side admin tooling is expected to change this
-//                later via the Admin SDK, which bypasses these rules)
 //
-// No other fields are permitted. No update/delete/read/list is ever
-// permitted from the client for this collection.
+// Admin-only fields (never settable on create; settable only via
+// update, only by a signed-in Firebase Auth user):
+//   - status:        string, one of a fixed workflow enum. Forced to
+//                    "new" on create; any value in the enum on update.
+//   - adminNotes:    string, optional, 0-5000 chars — free-text notes
+//   - quotedAmount:  number, optional, 0-1,000,000 — price given
+//   - scheduledDate: timestamp, optional — when the job is booked
+//   - urgent:        bool, optional — manually set by the admin;
+//                    NOT auto-detected here (that's dashboard UI logic)
+//   - lastUpdatedAt: timestamp, required on every update, must equal
+//                    request.time — lets the dashboard show "last touched"
+//
+// No other fields are permitted. No delete is ever permitted from the
+// client, signed in or not. Unauthenticated users may only create.
 //
 // ===============================================================
 
@@ -36,6 +42,11 @@ service cloud.firestore {
     // ===============================================================
     // Helper Functions
     // ===============================================================
+
+    // Check if the request is from a signed-in Firebase Auth user
+    function isAuthenticated() {
+      return request.auth != null;
+    }
 
     // Validate required fields exist
     function hasRequiredFields(fields) {
@@ -85,14 +96,53 @@ service cloud.firestore {
         data['createdAt'] == request.time &&
         data['status'] is string &&
         data['status'] == 'new';
+      // Note: hasOnlyAllowedFields(allowedFields) above already rejects
+      // any create request that includes adminNotes, quotedAmount,
+      // scheduledDate, or urgent — the schema is closed to exactly the
+      // 7 public fields, and status is pinned to 'new'.
+    }
+
+    // Validates an authenticated admin's update to an existing lead.
+    // Public fields (name, phone, email, service, message, createdAt)
+    // must remain byte-for-byte unchanged — only the admin-only fields
+    // below may be touched.
+    function isValidLeadUpdate() {
+      let data = request.resource.data;
+      let allFields = [
+        'name', 'phone', 'email', 'service', 'message', 'createdAt',
+        'status', 'adminNotes', 'quotedAmount', 'scheduledDate', 'urgent', 'lastUpdatedAt'
+      ];
+      let mutableFields = ['status', 'adminNotes', 'quotedAmount', 'scheduledDate', 'urgent', 'lastUpdatedAt'];
+      let allowedStatuses = ['new', 'contacted', 'quoted', 'scheduled', 'completed', 'closed_lost'];
+
+      return hasOnlyAllowedFields(allFields) &&
+        // Only admin-only fields may change; public fields are untouched.
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(mutableFields) &&
+        // lastUpdatedAt is required on every update and must be the server time.
+        data['lastUpdatedAt'] is timestamp &&
+        data['lastUpdatedAt'] == request.time &&
+        (!('status' in data) || (data['status'] is string && data['status'] in allowedStatuses)) &&
+        (!('adminNotes' in data) || validStringLength('adminNotes', 0, 5000)) &&
+        (!('quotedAmount' in data) ||
+          (data['quotedAmount'] is number && data['quotedAmount'] >= 0 && data['quotedAmount'] <= 1000000)) &&
+        (!('scheduledDate' in data) || data['scheduledDate'] is timestamp) &&
+        (!('urgent' in data) || data['urgent'] is bool);
     }
 
     match /leads/{leadId} {
       // Public, write-only lead capture: anyone can create a well-formed
-      // lead document. Nobody — including the creator — can read, list,
-      // update, or delete leads from the client.
+      // lead document with exactly the public fields, status pinned to "new".
       allow create: if isValidLead();
-      allow read, update, delete: if false;
+
+      // Signed-in admin can read and list all leads.
+      allow read: if isAuthenticated();
+
+      // Signed-in admin can update only the admin-only workflow fields;
+      // public, customer-submitted fields are immutable after create.
+      allow update: if isAuthenticated() && isValidLeadUpdate();
+
+      // No one can delete a lead from the client, signed in or not.
+      allow delete: if false;
     }
 
     // Default deny everything else.
