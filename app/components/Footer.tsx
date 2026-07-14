@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Footer() {
   const year = new Date().getFullYear();
 
@@ -63,8 +65,13 @@ export default function Footer() {
           </div>
         </div>
 
-        <div className="mt-10 border-t border-slate-800 pt-6 text-xs">
-          {`© ${year} Hass Electrical. Licensed & insured in North Carolina. All rights reserved.`}
+        <div className="mt-10 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-6 text-xs">
+          <span>
+            {`© ${year} Hass Electrical. Licensed & insured in North Carolina. All rights reserved.`}
+          </span>
+          <Link href="/admin" className="text-slate-600 hover:text-slate-400">
+            Staff Login
+          </Link>
         </div>
       </div>
     </footer>
