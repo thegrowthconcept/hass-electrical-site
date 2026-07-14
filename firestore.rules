@@ -1,0 +1,103 @@
+rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: leads
+// Document ID: auto-generated
+// Purpose: Public, unauthenticated quote-request submissions from the
+//          Contact form. This is a write-only inbox — nobody can read,
+//          update, delete, or list leads from the client. Reads happen
+//          later from a separate authenticated admin context (e.g. the
+//          Admin SDK on a server, or a signed-in admin app not covered
+//          by these rules yet).
+//
+// Fields:
+//   - name:      string, required, 1-200 chars
+//   - phone:     string, required, 1-30 chars
+//   - email:     string, required, 1-200 chars, valid email format
+//   - service:   string, required, one of a fixed enum of service types
+//   - message:   string, required, 1-5000 chars
+//   - createdAt: timestamp, required, must equal request.time
+//                (client must write this via serverTimestamp())
+//   - status:    string, required, must be "new" on create
+//                (server-side admin tooling is expected to change this
+//                later via the Admin SDK, which bypasses these rules)
+//
+// No other fields are permitted. No update/delete/read/list is ever
+// permitted from the client for this collection.
+//
+// ===============================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only the allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate string length
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate email format
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidLead() {
+      let data = request.resource.data;
+      let allowedFields = ['name', 'phone', 'email', 'service', 'message', 'createdAt', 'status'];
+      let allowedServices = [
+        'lighting', 'outlets', 'panel', 'breaker', 'fans',
+        'rewiring', 'troubleshooting', 'inspection', 'other'
+      ];
+
+      return hasOnlyAllowedFields(allowedFields) &&
+        hasRequiredFields(allowedFields) &&
+        validStringLength('name', 1, 200) &&
+        validStringLength('phone', 1, 30) &&
+        validStringLength('email', 1, 200) &&
+        isValidEmail(data['email']) &&
+        data['service'] is string &&
+        data['service'] in allowedServices &&
+        validStringLength('message', 1, 5000) &&
+        data['createdAt'] is timestamp &&
+        data['createdAt'] == request.time &&
+        data['status'] is string &&
+        data['status'] == 'new';
+    }
+
+    match /leads/{leadId} {
+      // Public, write-only lead capture: anyone can create a well-formed
+      // lead document. Nobody — including the creator — can read, list,
+      // update, or delete leads from the client.
+      allow create: if isValidLead();
+      allow read, update, delete: if false;
+    }
+
+    // Default deny everything else.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
